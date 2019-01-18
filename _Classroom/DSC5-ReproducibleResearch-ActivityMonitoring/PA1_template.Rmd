@@ -1,0 +1,235 @@
+---
+title: "Reproducible Research: Peer Assessment 1"
+output: 
+  html_document:
+    keep_md: true
+---
+
+First of all, the necessary packages are loaded.
+
+```{r message=FALSE}
+library(ggplot2)
+library(gridExtra)
+library(magrittr)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+```
+
+```{r, include=FALSE}
+# And also some hidden global things are specified, like kableExtra table stylings.
+tblstyle.activity <- . %>%
+  kable(row.names = TRUE, align = 'r') %>% 
+  kable_styling(full_width = FALSE, bootstrap_options = "condensed",
+                position = "center", font_size = 12) %>%
+  column_spec(1, bold = TRUE, width = "1cm") %>%
+  column_spec(c(2,4), width = "2cm") %>%
+  column_spec(3, width = "3cm")
+
+tblstyle.wdays <- . %>%
+  tblstyle.activity %>%
+  column_spec(5, width = "3cm")
+
+opts_chunk$set(fig.align = "center")
+```
+
+## Loading and preprocessing the data
+The activity data is loaded with *read.csv*, with the default parameters. The class of the *date* variable is changed to Date.
+```{r}
+A <- read.csv("activity.csv")
+A$date <- as.Date(A$date, "%Y-%m-%d")
+```
+
+There are **`r nrow(A)`** observations of **`r ncol(A)`** variables in the dataset.
+
+The first 10 lines of the dataset:
+
+```{r echo=FALSE}
+head(A, 10) %>% 
+  tblstyle.activity
+```
+
+A 10-line random sample from the dataset:
+
+```{r echo=FALSE}
+sample_indices <- sort(sample(1:dim(A)[1],10))
+A[sample_indices,] %>% 
+  tblstyle.activity
+```
+
+## What is mean total number of steps taken per day?
+The *mean* and *median* of the daily steps are calculated by first summing up the steps
+per day, then taking the mean and median of these. NA values are ignored.
+
+```{r}
+dailysteps <- tapply(A$steps, A$date, sum, na.rm = TRUE)
+dailysteps.mean <- mean(dailysteps)
+dailysteps.median <- median(dailysteps)
+```
+
+The mean of the daily steps is **`r dailysteps.mean`**, while the median is
+**`r dailysteps.median`**.
+
+The histogram of the daily steps is drawn below. The plot is also saved in a variable for a later histogram comparison.
+
+```{r}
+dailyplots <- list()
+
+nbins <- 20
+dailyplots$original <- 
+  qplot(dailysteps, bins = nbins, fill = I("steelblue"), color = I("lightgrey")) +
+  theme_light() +
+  ylim(0, 15) +
+  labs(title = "Histogram of daily steps", 
+       subtitle = paste("number of bins:", nbins), 
+       x = "Daily steps", 
+       y = "Frequency")
+```
+```{r echo=FALSE}
+print(dailyplots$original)
+```
+
+## What is the average daily activity pattern?
+To identify the daily activity pattern, first the average of steps per interval is calculated (NA values are ignored), and then a time series plot is drawn from the result. The interval with the highest activity is also calculated here.
+
+```{r}
+intervals <- unique(A$interval)
+steps.mean <- tapply(A$steps, A$interval, mean, na.rm = TRUE)
+
+interval.max <- intervals[steps.mean == max(steps.mean)]
+
+qplot(intervals, steps.mean, geom = "line", color = I("steelblue")) +
+  theme_light() +
+  labs(title = "Average daily activity pattern", x = "Interval ID", y = "Average steps")
+```
+
+The maximum activity is at *interval ID* **`r interval.max`**.
+
+Note that *interval ID* can be mapped to *hours and minutes* of the day in the following way:
+
+* assume the *interval ID* is 4-digit fixed length string
+* replace each *space* character with *0*
+* the first two digits are the hours, the second two are the minutes of the day.
+
+So for example 5 maps to 00:05, 740 maps to 07:40, 2310 maps to 23:10.
+
+## Imputing missing values
+The following lines calculate an overview of the NA values in the dataset: the total number of rows with at least one NA value, and the total number of NAs in each column.
+```{r}
+na.totalrows <- sum(sapply(t(A), is.na))
+na.percolumns <- lapply(A, function (X) sum(is.na(X)))
+```
+
+There are **`r na.totalrows` rows** with NA values in the dataset. The NA values
+are distributed among the variables as follows:
+
+* **steps:** `r na.percolumns$steps`
+* **date:** `r na.percolumns$date`
+* **interval:** `r na.percolumns$interval`
+
+Each NA value is imputed with the corresponding interval mean of the steps variable. The `intervals` and `steps.mean` objects are re-used from the average daily activity pattern calculation above.
+
+```{r}
+A.imputed <- A
+for (i in intervals)
+{
+  na.indices <- A.imputed$interval == i & is.na(A.imputed$steps)
+  A.imputed$steps[na.indices] <- steps.mean[as.character(i)]
+}
+```
+
+The first 10 lines of the *imputed* dataset:
+
+```{r echo=FALSE}
+head(A.imputed, 10) %>% 
+  tblstyle.activity
+```
+
+A 10-line sample from the *imputed* dataset (same lines as in the sample from the original dataset):
+
+```{r echo=FALSE}
+A.imputed[sample_indices,] %>% 
+  tblstyle.activity
+```
+
+The *mean* and *median* of the daily steps in the imputed dataset are calculated in the same way as in the non-imputed dataset: they are calculated by first summing up the steps per day, then taking the mean and median of these. NA values are ignored.
+
+```{r}
+dailystepsimp <- tapply(A.imputed$steps, A.imputed$date, sum, na.rm = TRUE)
+dailystepsimp.mean <- mean(dailystepsimp)
+dailystepsimp.median <- median(dailystepsimp)
+```
+
+The mean of the *imputed* daily steps is **`r dailystepsimp.mean`**, while the median is
+**`r dailystepsimp.median`**. For comparison, these values for the non-imputed dataset
+are *`r dailysteps.mean`* and *`r dailysteps.median`*, respectively.
+
+A histogram similar to the original dataset's is created for the imputed dataset, and it is placed into a 2 by 1 plot grid under the original histogram.
+
+```{r}
+nbins <- 20
+dailyplots$imputed  <-
+  qplot(dailystepsimp, bins = nbins, fill = I("steelblue"), color = I("lightgrey")) +
+  theme_light() +
+  labs(title = "Histogram of daily steps (imputed)", 
+       subtitle = paste("number of bins:", nbins), 
+       x = "Daily steps", 
+       y = "Frequency")
+
+grid.arrange(grobs = dailyplots, nrow = 2)
+```
+
+Imputing decreased the occurence of intervals with 0 steps, and in general increased the occurence of other intervals. This increment seems to basically depend on the oringinal frequency of the interval: a higher original frequency makes a greater increase more likely, while a lower original frequency makes a greater increase less likely.
+
+## Are there differences in activity patterns between weekdays and weekends?
+First the date/time locale is set to *United States* to ensure day names appear in English.
+
+```{r results="hide"}
+LC_TIME.original <- Sys.getlocale("LC_TIME")
+Sys.setlocale("LC_TIME", "us")
+```
+
+Then a new variable is added to the *imputed* activity table, which tells if a measurement corresponds to weekdays or weekends. The new **day** variable is a factor with two levels: **weekend** and **weekday**.
+
+```{r}
+A.imputed$day <- weekdays(A.imputed$date, abbreviate = TRUE)
+A.imputed$day <- replace(A.imputed$day, A.imputed$day %in% c("Sat", "Sun"), "weekend")
+A.imputed$day <- replace(A.imputed$day, A.imputed$day != "weekend", "weekday")
+A.imputed$day <- factor(A.imputed$day)
+
+interval.steps.mean <- A.imputed %>% group_by(day, interval) %>% summarize(mean = mean(steps))
+```
+
+A 10-line sample from the imputed dataset with *weekday indication*:
+
+```{r echo=FALSE}
+A.imputed[sample_indices,] %>%
+  tblstyle.wdays
+```
+
+Using this enhanced activity data, a two-panel plot is created, which shows activity means per interval (across days) for *weekdays* and *weekend*.
+
+```{r}
+ggplot(interval.steps.mean, aes(interval, mean)) + 
+  facet_grid(rows = vars(day)) +
+  theme_light() +
+  geom_line(color = I("steelblue")) +
+  geom_vline(xintercept = c(500, 1000, 1800, 2000, 2200), color = I("grey"), size = 2, alpha = 0.5) +
+  labs(title = "Average daily activity pattern", x = "Interval ID", y = "Average steps")
+```
+
+This comparison indicates the following:
+
+* higher morning activity on weekdays (approx. between activity IDs 500 and 1000, which correspond to 5:00 and 10:00 in the morning)
+* higher daytime activity on weekends (approx. between activity IDs 1000 and 1800, which correspond to 10:00 and 18:00 hours)
+* slightly higher late-afternoon activity on weekdays (approx. between 18:00 and 20:00 hours)
+* slightly higher early-night activity on weekends (after approx. 20:00 hours)
+* there is no significant difference in activity during late-night and early-morning hours (approx. between 22:00 and 5:00 hours)
+
+Note that these are only assumptions, which must be verified. Supporting lines are drawn at activity IDs corresponding to the named hours.
+
+Finally, the data/time locale is reset to the original setting.
+
+```{r results="hide"}
+Sys.setlocale("LC_TIME", LC_TIME.original)
+```

@@ -1,0 +1,445 @@
+---
+title: "Worst-damage weather events in the US"
+author: "Istvan Andras Horvath"
+date: 'October 8th, 2018'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(kableExtra)
+library(grid)
+library(ggplot2)
+library(gtable)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Synopsis
+This analysis uses the **U.S. National Oceanic and Atmospheric Administration's (NOAA) [Storm Database]** to answer the following questions:
+
+1. Across the United States, which types of events are most harmful with respect to population health?
+2. Across the United States, which types of events have the greatest economic consequences?
+
+Note that the database contains events from years between 1950 and 2011.
+
+The analysis relies on the [Storm Data Preparation] instruction document issued by the *National Weather Service* department of NOAA.
+
+## Data Processing
+The storm data is read into object `D`, which is used throughout the analysis as the source of data. Results of data transformations are saved in this object. 
+
+```{r}
+download.file("https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2",
+              "StormData.csv.bz2")
+D <- read.csv("StormData.csv.bz2", stringsAsFactors = FALSE, nrows = 1e6)
+```
+
+There are two major steps of data processing in this analysis:
+
+1. Based on the [Storm Data Preparation] document, the property and crop damages should be stored as pairs of *value* and *expression* in each record, where *expression* should indicate the magnitude of the *value*. For example, the value *100* with the expression *M* means *100 million*. This data processing step sets all value to *value* \* *expression*, and all expressions to *U*, which indicates the magnitude of the expression is 1. Furthermore a new variable is added to the dataset, which is simply the sum of property and crop damage values.
+2. Based on the [Storm Data Preparation] document, there should be only a certain number of different weather event types in the dataset (*valid* event types). However, this is not true in practice: there are way more event types than expected (*non-valid* event types). The aim of this step is to unite as much non-valid event types as possible into as less event types (not necessarily valid ones) as possible.
+
+These steps are detailed in the following sections.
+
+### Transformation of property and crop damages
+Property and crop damages are stored in four columns in the original dataset:
+
+* **PROPDMG:** the value of property damage;
+* **PROPDMGEXP:** the expression of property damage;
+* **CROPDMG:** the value of crop damage;
+* **CROPDMGEXP:** the expression of crop damage.
+
+Damage expression is an empty string or a single-character value, which specifies the multiplier of the damage value. Based on the [Storm Data Preparation] document, valid values are the **empty string** (no multiplication), **K** (thousands), **M** (millions) and **B** (billions).
+
+In spite of this, the dataset contains several other expression characters:
+
+* PROPDMGEXP: `r sort(unique(D$PROPDMGEXP))`
+* CROPDMGEXP: `r sort(unique(D$CROPDMGEXP))`
+
+Property and crop damage values are made directly comparable with the help of the `clean.dollars` function.
+
+Damage values with *non-valid* expression are ignored by this analysis and therefore these values are replaced with zero, regardless of the original damage value.
+
+Damage values with *valid* expression are on the other hand multiplied according to the expression (see above).
+
+```{r}
+clean.dollars <- function(dollar.vector, dollar.exp)
+{
+  valid.exp <- c("", "K", "M", "B")
+  
+  dollar.vector <- replace(dollar.vector, !(dollar.exp %in% valid.exp), 0)
+  dollar.exp <- replace(dollar.exp, !(dollar.exp %in% valid.exp), "")
+
+  dollar.exp <- replace(dollar.exp, dollar.exp == "", "U")
+
+  value.map <- c(U = 1, K = 1e3, M = 1e6, B = 1e9)
+  
+  for (v in names(value.map))
+  {
+    dollar.vector[dollar.exp == v] <- 
+      dollar.vector[dollar.exp == v] * value.map[v]
+  }
+  
+  return(dollar.vector)
+}
+```
+
+The transformation is made on both `PROPDMG` and `CROPDMG` variables.
+
+```{r}
+D$PROPDMG <- clean.dollars(D$PROPDMG, D$PROPDMGEXP)
+D$CROPDMG <- clean.dollars(D$CROPDMG, D$CROPDMGEXP)
+```
+
+Also, all the expressions are set to *U*, which denotes the damage values have been set to *unit values* in the dataset; this is done only for the sake of clarity, because in practice damage expressions are not used further in this analysis.
+
+```{r}
+D$PROPDMGEXP <- "U"
+D$CROPDMGEXP <- "U"
+```
+
+Finally, a new column called `ALLDMG` is created in the dataset, which is simply the sum of `PROPDMG` and `CROPDMG` in each row.
+
+```{r}
+D$ALLDMG <- D$PROPDMG + D$CROPDMG
+```
+
+### Transformation of event types
+Valid event types are defined by the [Storm Data Preparation] instructions. These are listed in the `valid.events` object.
+
+```{r}
+valid.events <- c('Astronomical Low Tide', 'Avalanche', 'Blizzard', 'Coastal Flood', 'Cold/Wind Chill', 'Debris Flow', 'Dense Fog', 'Dense Smoke', 'Drought', 'Dust Devil', 'Dust Storm', 'Excessive Heat', 'Extreme Cold/Wind Chill', 'Flash Flood', 'Flood', 'Frost/Freeze', 'Funnel Cloud', 'Freezing Fog', 'Hail', 'Heat', 'Heavy Rain', 'Heavy Snow', 'High Surf', 'High Wind', 'Hurricane/Typhoon', 'Ice Storm', 'Lake-Effect Snow', 'Lakeshore Flood', 'Lightning', 'Marine Hail', 'Marine High Wind', 'Marine Strong Wind', 'Marine Thunderstorm Wind', 'Rip Current', 'Seiche', 'Sleet', 'Storm Surge/Tide', 'Strong Wind', 'Thunderstorm Wind', 'Tornado', 'Tropical Depression', 'Tropical Storm', 'Tsunami', 'Volcanic Ash', 'Waterspout', 'Wildfire', 'Winter Storm', 'Winter Weather')
+```
+
+The dataset has a column called `EVTYPE`, which specifies the type of the weather event the record is about. Just like in case of the damage expressions, this also contains non-valid event types, but here situation is much worse: there are `r length(unique(D$EVTYPE))` different values. These include variants which are same except for the casing or typos, synonyms, mixed types, new types, free-text comments etc. 
+
+Here are 20 examples from the dataset: *`r sort(unique(D$EVTYPE)[c(646, 840, 52, 254, 877, 644, 297, 199, 150, 840, 46, 259, 287, 612, 441, 556, 484, 409, 458, 691)])`*.
+
+First of all, both the list of valid events and the events in the dataset are converted to upper case. The original `EVTYPE` column is retained in the dataset, the upper case variants are put to a new column called `EVTYPE2`. Note that all the further transformations are done on this column.
+
+```{r}
+valid.events <- toupper(valid.events)
+D$EVTYPE2 <- toupper(D$EVTYPE)
+```
+
+Then some very general statistics is calculated about the wrong event types.
+
+```{r}
+valid.count <- sum(table(D$EVTYPE2)[valid.events], na.rm = TRUE)
+valid.percent <- round(valid.count / nrow(D) * 100, 2)
+```
+
+Based on this, the dataset has **`r nrow(D)`** observations, and out of these **`r valid.count`** pieces have a non-valid event type; this is approximately **`r valid.percent`%** of the data, which implies a clean-up is seriously needed.
+
+#### Upper case event types
+Making the event types upper case has a good effect in itself. The following snippet calculates the measure of enhancement, which is simply the difference between the previous number of different event types and the current number. Similar statistic will be used throughout the complete event type transformation process.
+
+```{r}
+begin.count <- length(unique(D$EVTYPE))
+ev.count <- list(prev = length(unique(D$EVTYPE)),
+                 cur = length(unique(D$EVTYPE2)),
+                 diff = length(unique(D$EVTYPE)) - length(unique(D$EVTYPE2)))
+```
+
+Upper casing unified **`r ev.count$prev`** different event types into **`r ev.count$cur`** pieces, which is a decrease by **`r ev.count$diff`**.
+
+#### Remove zero-damage records
+The dataset contains a large number of records about weather events with no damage, i.e. where fatalities, injuries, property damage and crop damage are all 0. These records can be ignored and thus removed, because they do not affect the outcome of the analysis.
+
+A new function called `update.evcount` is introduced which updates the `ev.count` counter list after a transformation step is completed. This function is used in all further steps of data processing.
+
+```{r}
+update.evcount <- function(prev.count, cur.count)
+{
+  list(prev = prev.count,
+       cur = cur.count,
+       diff = prev.count - cur.count)
+}
+```
+
+Zero-damage records are removed with a simple call to `dplyr::filter` function. Some statistics is also calculated here.
+
+```{r}
+nrow.old <- nrow(D)
+
+D <- D %>% filter(FATALITIES != 0 | INJURIES != 0 | PROPDMG != 0 | CROPDMG != 0)
+
+nrow.diff <- nrow.old - nrow(D)
+nrow.diffpc <- round(nrow.diff / nrow.old * 100, 2)
+
+ev.count <- update.evcount(ev.count$cur, length(unique(D$EVTYPE2)))
+```
+
+This action removed **`r nrow.diff`** records, i.e. approximately **`r nrow.diffpc`%** of the data, and also unified **`r ev.count$prev`** different event types into **`r ev.count$cur`** pieces, which is a decrease by **`r ev.count$diff`**.
+
+#### Remove junk from event type strings
+This step takes the list of unique event type strings, and removes junk characters and words.
+
+A new function called `update.evtype2` is introduced which updates the `EVTYPE2` column of the dataset with the new names, line by line. This function is used in several steps of the data processing.
+
+```{r}
+update.evtype2 <- function(evtype2, old.values, new.values)
+{
+  for (i in 1:nrow(D))
+  {
+    evtype2[[i]] <- new.values[old.values == evtype2[i]]
+  }
+
+  return(evtype2)
+}
+```
+
+The junk removal consists of the following steps:
+
+1. non-alphabetical characters are replaced by spaces;
+2. leading and trailing spaces are removed;
+3. excessive spaces between alphabetical characters are removed (i.e. multiple spaces to single space);
+4. space followed by a single character is removed;
+5. *AND* and *ON* between two other words are removed.
+
+```{r}
+evtypes.orig <- sort(unique(D$EVTYPE2))
+
+evtypes.new <- gsub("[^A-Z]", " ", evtypes.orig)
+evtypes.new <- gsub("^ +| +$", "", evtypes.new)
+evtypes.new <- gsub("([A-Z]) +([A-Z])", "\\1 \\2", evtypes.new)
+evtypes.new <- gsub(" [A-Z]{1}$", "", evtypes.new)
+evtypes.new <- gsub(" (AND|ON) ", " ", evtypes.new)
+
+D$EVTYPE2 <- update.evtype2(D$EVTYPE2, evtypes.orig, evtypes.new)
+
+ev.count <- update.evcount(ev.count$cur, length(unique(D$EVTYPE2)))
+```
+
+Junk removal unified **`r ev.count$prev`** different event types into **`r ev.count$cur`** pieces, which is a decrease by **`r ev.count$diff`**.
+
+#### Change plurals to singles
+Several event types in the dataset differ only in pluralization, which are usually unnecessary duplicates of other event types.
+
+First a list of suspected plurals is created by creating a vector of unique words of the event types, and then words ending with an *S* character are filtered out.
+
+```{r}
+all.tokens <- strsplit(unique(D$EVTYPE2), split = " ")
+all.tokens <- sort(unique(unlist(all.tokens)))
+plurals <- grep("[A-Z]+S( |$)", all.tokens, value = TRUE)
+```
+
+This gives the following result: *`r plurals`*.
+
+Out of these *HAZARDOUS* and *WETNESS* are not pluralized words, and therefore they are removed from the plural list. *WINDSS* has two *S* characters at the end most probably by mistake, and as it has the same stem as *WINDS*, which is already on the list, *WINDSS* is also removed. For the remaining words, the trailing *S* character is simply removed to obtain the single form.
+
+```{r}
+plurals <- plurals[!(plurals %in% c("HAZARDOUS", "WETNESS", "WINDSS"))]
+singles <- gsub("S$", "", plurals)
+```
+
+Finally, the list of single word forms is used to build a regular expression, which is used to replace plurals to singles in the list of event types. The `EVTYPE2` column is updated with the results.
+
+```{r}
+evtypes.orig <- sort(unique(D$EVTYPE2))
+
+regex.str <- paste0("(", paste(singles, collapse = "|"), ")", "S+( |$)")
+evtypes.new <- gsub(regex.str, "\\1\\2", evtypes.orig)
+
+D$EVTYPE2 <- update.evtype2(D$EVTYPE2, evtypes.orig, evtypes.new)
+
+ev.count <- update.evcount(ev.count$cur, length(unique(D$EVTYPE2)))
+```
+
+Changing plural words to single words unified **`r ev.count$prev`** different event types into **`r ev.count$cur`** pieces, which is a decrease by **`r ev.count$diff`**.
+
+**Note**: This step cannot handle special plural forms (like *minima* and *maxima*). However, this should not be an issue as no such event type was observed in the dataset.
+
+#### Replacement of specific words
+The result of the previous steps was checked manually for further possible enhancement of the set of event types. The result of the analysis is shown in the table below. This table is stored in the `replacement.table` data frame. For the sake of clarity, the R script of this is not echoed here, only the content of the replacement table is shown below.
+
+```{r echo = FALSE}
+replace.from <- c('', 'AVALANCE', 'BLOWING SNOW', 'BRUSH FIRE', 'COASTAL SURGE', 'COASTALSTORM', 'DRY MICROBURST WIND', 'EROSION CSTL FLOOD', 'EXTREME COLD', 'EXTREME WINDCHILL', 'FLASH FLOOD FLOOD', 'FLASH FLOOD FROM ICE JAM', 'FLASH FLOOD THUNDERSTORM WI', 'FLOOD FLASH', 'FLOOD FLASH FLOOD', 'FLOOD FLASHFLOOD', 'FLOOD RIVER FLOOD', 'FLOODING', 'FOREST FIRE', 'FREEZE', 'FREEZING RAIN', 'FROST', 'GRAS FIRE', 'GROUND BLIZZARD', 'GUSTY WIND HVY RAIN', 'HAIL DAMAGE', 'HAILSTORM', 'HARD FREEZE', 'HAZARDOUS SURF', 'HEAVY SNOW SQUALL', 'HEAVY SURF HIGH SURF', 'HIGH SQUALL', 'HIGH SWELL', 'HIGH WAVE', 'HIGH WIND DAMAGE', 'HURRICANE EDOUARD', 'HURRICANE EMILY', 'HURRICANE ERIN', 'HURRICANE FELIX', 'HURRICANE GORDON', 'HURRICANE HURRICANE', 'HURRICANE OPAL', 'HURRICANE OPAL HIGH WIND', 'HVY RAIN', 'ICE JAM FLOOD', 'ICE JAM FLOOD MINOR', 'ICE ON ROAD', 'ICE ROAD', 'LAKE FLOOD', 'LATE SEASON SNOW', 'LIGHT FREEZING RAIN', 'LIGHT SNOWFALL', 'LIGHTING', 'LIGHTNING FIRE', 'LIGHTNING INJURY', 'LIGHTNING THUNDERSTORM WIN', 'LIGHTNING WAUSEON', 'LIGNTNING', 'LOW TEMPERATURE', 'MAJOR FLOOD', 'MARINE MISHAP', 'MICROBURST WIND', 'MINOR FLOOD', 'MIXED PERCIP', 'MUD SLIDE', 'MUD SLIDEURBAN FLOOD', 'MUDSLIDE', 'RECORD COLD', 'RECORD EXCESSIVE HEAT', 'RECORD HEAT', 'RIP CURRENTHEAVY SURF', 'RIVER FLOOD', 'RIVER STREAM FLOOD', 'ROCK SLIDE', 'ROUGH SURF', 'RURAL FLOOD', 'SEVERE THUNDERSTORM WIND', 'SMALL HAIL', 'SNOW BLOWING SNOW', 'SNOW FREEZING RAIN', 'SNOW HEAVY SNOW', 'SNOW SLEET FREEZING RAIN', 'SNOW SQUALL', 'SNOWMELT FLOOD', 'STORM FORCE WIND', 'STORM SURGE', 'THUDERSTORM WIND', 'THUNDEERSTORM WIND', 'THUNDERESTORM WIND', 'THUNDERSTORM DAMAGE TO', 'THUNDERSTORM HAIL', 'THUNDERSTORM WIN', 'THUNDERSTORM WIND AND', 'THUNDERSTORM WIND AWNING', 'THUNDERSTORM WIND DAMAGE', 'THUNDERSTORM WIND FUNNEL CLOU', 'THUNDERSTORM WIND HAIL', 'THUNDERSTORM WIND MPH', 'THUNDERSTORM WIND TREE', 'THUNDERSTORM WINDSHAIL', 'THUNDERSTORMW', 'THUNDERSTORMWIND', 'THUNDERSTROM WIND', 'THUNDERTORM WIND', 'THUNERSTORM WIND', 'TIDAL FLOOD', 'TORNADOE', 'TORNADOE THUNDERSTORM WIND HAIL', 'TORNDAO', 'TROPICAL STORM', 'TROPICAL STORM ALBERTO', 'TROPICAL STORM DEAN', 'TROPICAL STORM GORDON', 'TROPICAL STORM JERRY', 'TSTM', 'TUNDERSTORM WIND', 'TYPHOON', 'UNSEASONABLE COLD', 'UNSEASONABLY WARM DRY', 'URBAN FLOOD', 'URBAN SMALL', 'URBAN SMALL STREAM', 'URBAN SMALL STREAM FLOOD', 'URBAN SMALL STREAM FLOODIN', 'URBAN SML STREAM FLD', 'WARM WEATHER', 'WILD FIRE', 'WILD FOREST FIRE', 'WIND DAMAGE', 'WIND STORM', 'WINTER WEATHER MIX', 'WINTRY MIX')
+
+replace.to <- c('UNNAMED', 'AVALANCHE', 'BLIZZARD', 'WILDFIRE', 'STORM SURGE TIDE', 'COASTAL STORM', 'DRY MICROBURST', 'COASTAL FLOOD EROSION', 'EXTREME COLD WIND CHILL', 'EXTREME COLD WIND CHILL', 'FLASH FLOOD', 'ICE JAM FLOOD', 'FLASH FLOOD THUNDERSTORM WIND', 'FLASH FLOOD', 'FLASH FLOOD', 'FLASH FLOOD', 'FLOOD', 'FLOOD', 'WILDFIRE', 'FROST FREEZE', 'SLEET', 'FROST FREEZE', 'WILDFIRE', 'BLIZZARD', 'GUSTY WIND HEAVY RAIN', 'HAIL', 'HAIL', 'FROST FREEZE', 'HIGH SURF', 'BLIZZARD', 'HIGH SURF', 'HIGH WIND', 'HIGH SURF', 'HIGH SURF', 'HIGH WIND', 'HURRICANE', 'HURRICANE', 'HURRICANE', 'HURRICANE', 'HURRICANE', 'HURRICANE', 'HURRICANE', 'HURRICANE HIGH WIND', 'HEAVY RAIN', 'ICE JAM FLOOD', 'ICE JAM FLOOD', 'ICY ROAD', 'ICY ROAD', 'LAKESHORE FLOOD', 'SNOW', 'SLEET', 'LIGHT SNOW', 'LIGHTNING', 'LIGHTNING', 'LIGHTNING', 'LIGHTNING THUNDERSTORM WIND', 'LIGHTNING', 'LIGHTNING', 'COLD WIND CHILL', 'FLOOD', 'MARINE ACCIDENT', 'MICROBURST', 'FLOOD', 'MIXED PERCIPITATION', 'LANDSLIDE', 'MUD SLIDE URBAN FLOOD', 'LANDSLIDE', 'EXTREME COLD WIND CHILL', 'EXCESSIVE HEAT', 'EXCESSIVE HEAT', 'RIP CURRENT HIGH SURF', 'FLOOD', 'FLOOD', 'LANDSLIDE', 'HIGH SURF', 'FLOOD', 'THUNDERSTORM WIND', 'HAIL', 'BLIZZARD', 'SNOW SLEET', 'HEAVY SNOW', 'SNOW SLEET', 'BLIZZARD', 'FLOOD', 'THUNDERSTORM WIND', 'HIGH SURF', 'THUNDERSTORM WIND', 'THUNDERSTORM WIND', 'THUNDERSTORM WIND', 'THUNDERSTORM', 'HAIL', 'THUNDERSTORM WIND', 'THUNDERSTORM WIND', 'THUNDERSTORM WIND', 'THUNDERSTORM WIND', 'THUNDERSTORM WIND FUNNEL CLOUD', 'THUNDERSTORM WIND HAIL', 'THUNDERSTORM WIND', 'THUNDERSTORM WIND', 'THUNDERSTORM WIND HAIL', 'THUNDERSTORM WIND', 'THUNDERSTORM WIND', 'THUNDERSTORM WIND', 'THUNDERSTORM WIND', 'THUNDERSTORM WIND', 'FLOOD', 'TORNADO', 'TORNADO THUNDERSTORM WIND HAIL', 'TORNADO', 'TROPICAL DEPRESSION', 'TROPICAL DEPRESSION', 'TROPICAL DEPRESSION', 'TROPICAL DEPRESSION', 'TROPICAL DEPRESSION', 'THUNDERSTORM', 'THUNDERSTORM WIND', 'HURRICANE', 'UNSEASONABLY COLD', 'UNSEASONABLY WARM', 'FLASH FLOOD', 'FLASH FLOOD', 'FLASH FLOOD', 'FLASH FLOOD', 'FLASH FLOOD', 'FLASH FLOOD', 'HEAT', 'WILDFIRE', 'WILDFIRE', 'WIND', 'THUNDERSTORM WIND', 'WINTER WEATHER', 'WINTER WEATHER')
+
+replacement.type <- c('synonym', 'correction', 'synonym', 'synonym', 'synonym', 'correction', 'synonym', 'correction', 'synonym', 'synonym', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'general', 'synonym', 'synonym', 'synonym', 'synonym', 'synonym', 'correction', 'correction', 'correction', 'synonym', 'synonym', 'synonym', 'synonym', 'correction', 'synonym', 'synonym', 'synonym', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'synonym', 'synonym', 'synonym', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'synonym', 'correction', 'synonym', 'synonym', 'correction', 'correction', 'synonym', 'correction', 'synonym', 'synonym', 'correction', 'correction', 'correction', 'correction', 'correction', 'synonym', 'synonym', 'correction', 'correction', 'correction', 'synonym', 'synonym', 'synonym', 'correction', 'synonym', 'synonym', 'synonym', 'synonym', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction', 'synonym', 'correction', 'correction', 'correction', 'synonym', 'correction', 'correction', 'correction', 'correction', 'general', 'correction', 'general', 'correction', 'correction', 'synonym', 'correction', 'correction', 'correction', 'correction', 'correction', 'synonym', 'correction', 'correction', 'correction', 'correction', 'correction', 'correction')
+
+replacement.table <- data.frame(From = replace.from,
+                                To = replace.to,
+                                Type = replacement.type,
+                                stringsAsFactors = FALSE)
+
+replacement.table %>%
+  kable(row.names = TRUE, align = 'r') %>% 
+  kable_styling(full_width = FALSE, bootstrap_options = "condensed",
+                position = "center", font_size = 11) %>%
+  column_spec(1, width = "1cm") %>%
+  column_spec(2:3, width = "7cm") %>%
+  column_spec(4, width = "3cm")
+```
+
+The `Type` column indicates the nature of replacement:
+
+* *general*: it is a replacement of a deviation frequent among event types;
+* *synonym*: the two terms have the same meaning;
+* *correction*: this indicates a correction of a typo, duplication, etc.
+
+Replacements are made on the result of the previous step.
+
+First the *general* replacements are made. In this case replacement is made on sub-strings of event type strings.
+
+```{r}
+evtypes.orig <- sort(unique(D$EVTYPE2))
+evtypes.new <- evtypes.orig
+
+R <- replacement.table %>% filter(Type == "general")
+
+for (i in 1:nrow(R))
+{
+  evtypes.new <- gsub(R$From[i], R$To[i], evtypes.new)
+}
+```
+
+After this, the *synonym* and *correction* replacements are made. Here the replacement is made only if `From` exactly matches the event type string.
+
+```{r}
+R <- replacement.table %>% filter(Type %in% c("synonym", "correction"))
+
+for (i in 1:nrow(R))
+{
+  evtypes.new <- gsub(paste0("^", R$From[i], "$"), R$To[i], evtypes.new)
+}
+```
+
+Finally the `EVTYPE2` column in the dataset, and the count statistics are updated.
+
+```{r}
+D$EVTYPE2 <- update.evtype2(D$EVTYPE2, evtypes.orig, evtypes.new)
+
+ev.count <- update.evcount(ev.count$cur, length(unique(D$EVTYPE2)))
+```
+
+These replacements unified **`r ev.count$prev`** different event types into **`r ev.count$cur`** pieces, which is a decrease by **`r ev.count$diff`**.
+
+### Summary of Data Processing
+Up to this point, the original **`r begin.count`** pieces of event type were unified into **`r length(unique(D$EVTYPE2))`** pieces.
+
+Further unification would require deeper understanding of the topic, and also a deeper analysis of the remarks to understand the non-valid event types. These are not done in this analysis.
+
+## Results
+
+This analysis deals with the following questions:
+
+1. Across the United States, which types of events are most harmful with respect to population health?
+2. Across the United States, which types of events have the greatest economic consequences?
+
+The answers to these questions require different variables from the dataset, but they can be constructed in the same way.
+
+```{r}
+top.n <- 10
+
+selector <- c("FATALITIES", "INJURIES", "PROPDMG", "CROPDMG", "ALLDMG")
+
+ylabels <- c("Fatalities (people)", "Injuries (people)",
+             "Property damage ($ billion)", "Crop damage ($ billion)",
+             "Total damage ($ billion)")
+names(ylabels) <- selector
+```
+
+The plots will show the `r top.n` most harmful weather events for damage types *`r selector`*. All of these are totals across the whole United States, per weather event.
+
+First, a grouping by `EVTYPE2` is created for each of the damage types. In case of *PROPDMG*, *CROPDMG* and *ALLDMG*, values are divided by one billion.
+
+```{r}
+tops <- list()
+
+for (s in selector)
+{
+  D.grouped <- D %>%
+    select(EVTYPE2, DATA = s) %>%
+    group_by(EVTYPE2) %>%
+    summarise(DATA = sum(DATA)) %>%
+    arrange(desc(DATA)) %>%
+    mutate(EVTYPE2 = factor(EVTYPE2, EVTYPE2))
+  
+  if (s %in% c("PROPDMG", "CROPDMG", "ALLDMG"))
+    D.grouped <- D.grouped %>% mutate(DATA = DATA / 1e9)
+  
+  tops[[s]] <- D.grouped[1:top.n,]
+}
+```
+
+For each of the top `r top.n` tables, a column plot is created (but not yet shown), which will be used on the final figures.
+
+```{r}
+grobs <- list()
+
+for (s in selector)
+{
+  col.plot <- ggplot(tops[[s]], aes(EVTYPE2, DATA)) +
+              geom_col(fill = I("steelblue")) +
+              theme_light() +
+              theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+              xlab("Weather event") +
+              ylab(ylabels[s])
+  
+  grobs[[s]] <- ggplotGrob(col.plot)
+}
+```
+  
+  
+### Question 1: Across the United States, which types of events are most harmful with respect to population health?
+
+The following table shows the top `r top.n` most harmful weather events with respect to population health in the US. Values are given in *people*.
+
+```{r echo=FALSE}
+bind_cols(tops$FATALITIES, tops$INJURIES) %>%
+  kable(row.names = TRUE, 
+        col.names = c("Weather event", "Fatalities", "Weather event", "Injuries"), 
+        align = 'r') %>%
+  kable_styling(full_width = FALSE, bootstrap_options = "condensed",
+                position = "center", font_size = 11) %>%
+  column_spec(1, width = "1cm", bold = TRUE) %>%
+  column_spec(c(2,4), width = "5cm", bold = TRUE) %>%
+  column_spec(c(3,5), width = "2cm")
+```  
+
+The same result is summarised on the figure below.
+
+```{r echo=FALSE, fig.align="center", fig.cap="*Figure 1. Most harmful weather events across the US (population health)*"}
+figure <- cbind(grobs$FATALITIES, grobs$INJURIES, size = "first")
+figure$heights <- grid::unit.pmax(grobs$FATALITIES$heights, grobs$INJURIES$heights)
+grid.draw(figure)
+```
+
+### Question 2: Across the United States, which types of events have the greatest economic consequences?
+
+The following table shows the top `r top.n` most harmful weather events with respect to the economy in the US. Values are given in *billion dollars*.
+
+```{r echo=FALSE}
+bind_cols(tops$PROPDMG, tops$CROPDMG, tops$ALLDMG) %>%
+  kable(row.names = TRUE, 
+        col.names = c("Weather event", "Property damage",
+                      "Weather event", "Crop damage",
+                      "Weather event", "Total damage"),
+        align = 'r') %>%
+  kable_styling(full_width = FALSE, bootstrap_options = "condensed",
+                position = "center", font_size = 11) %>%
+  column_spec(1, width = "1cm", bold = TRUE) %>%
+  column_spec(c(2,4,6), width = "5cm", bold = TRUE) %>%
+  column_spec(c(3,5,7), width = "2cm")
+```  
+
+The same result is summarised on the figure below.
+
+```{r echo=FALSE, fig.width=10, fig.align="center", fig.cap="*Figure 2. Most harmful weather events across the US (impact on economy)*"}
+figure <- cbind(grobs$PROPDMG, grobs$CROPDMG, grobs$ALLDMG, size = "first")
+figure$heights <- grid::unit.pmax(grobs$PROPDMG$heights,
+                                  grobs$CROPDMG$heights,
+                                  grobs$ALLDMG$heights)
+grid.draw(figure)
+```
+
+### Summary of Results
+The analysis shows that **tornados** are the most harmful weather events with respect to population health - both from deaths and injuries point of view. It is also clearly visible that the impact of tornados on population health is much higher than any other weather event.
+
+Regarding economic consequences, **flood** is the leading weather event for property damage and total damage. **Drought** is the leading weather event for crop damage, but **flood** is also there as second, with a relatively close value to drought.
+
+
+[Storm Database]: https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2
+[Storm Data Preparation]: https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf
