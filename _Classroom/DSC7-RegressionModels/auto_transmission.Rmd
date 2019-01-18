@@ -1,0 +1,314 @@
+---
+title: "Effects of vehicle transmission type on miles per gallon values"
+author: "Istvan Andras Horvath"
+date: "December 18th, 2018"
+output:
+  pdf_document:
+    fig_caption: yes
+    includes:
+      in_header: h.tex
+  word_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(kableExtra)
+library(gridExtra)
+
+knitr::opts_chunk$set(echo = TRUE, out.height = "7cm",
+                      fig.align = "center", fig.show = "hold", size = "tiny")
+
+table.style <- . %>% kable_styling(bootstrap_options = "basic",
+                                   full_width = FALSE, 
+                                   position = "center", 
+                                   font_size = 10)
+```
+
+# Synopsis
+We use linear regression models on the *Motor Trend Car Road Tests (mtcars)* dataset to identify whether or not there is any impact of a car's transmission type (automatic or manual) on how far it can travel with one US gallon of fuel.
+
+First we overview the *mtcars* dataset, do some minor data transformations and explore the relevant part of the dataset, then we thoroughly analyse the possible relationship between miles per gallon values and transmission types using several regression models and a simple model selection algorithm, and conclude that in practice the transmission type has no statistically significant impact on MPG.
+
+This analysis appears also on RPubs: http://rpubs.com/uxexax/452100
+
+# Input data
+## Overview
+The analysis is based on the **Motor Trend Car Road Tests (mtcars)** dataset provided by the R package **datasets**. As its description says, *"the data was extracted from the 1974 Motor Trend US magazine, and comprises fuel consumption and 10 aspects of automobile design and performance for 32 automobiles (1973–74 models)."*
+
+The data is stored in a data frame, which has 32 observations on 11 numeric variables, which is summarized below:
+
+```{r echo=FALSE}
+df.description <- data.frame(check.names = FALSE,
+  `Column #` = 1:11,
+  `Variable` = c("mpg", "cyl", "disp", "hp", "drat", "wt",
+                 "qseq", "vs", "am", "gear", "carb"),
+  `Description` = c("Miles per US gallon",
+                    "Number of cylinders",
+                    "Displacement (cu.in.)",
+                    "Gross horsepower",
+                    "Rear axle ratio",
+                    "Weight (1000 lbs)",
+                    "Quarter mile time",
+                    "Engine (0 = V-shaped, 1 = straight",
+                    "Transmission (0 = automatic, 1 = manual)",
+                    "Number of forward gears",
+                    "Number of carburetors")
+)
+
+df.description %>%
+  kable(row.names = FALSE) %>% table.style %>%
+  row_spec(c(1,9), bold = TRUE) %>%
+  row_spec(c(2,3,5,7,8,11), italic = TRUE, color = "gray")
+```
+
+The focus of the analyis is the relation between *miles per gallon (mpg)* and *transmission (am)*, marked with bold in the table. Other variables considered are in normal style, while variables not considered are in grey italic.
+
+## Transformations
+Some of the variables in the dataset had been factorized:
+
+```{r}
+mtcars$am <- factor(mtcars$am)
+mtcars$cyl <- factor(mtcars$cyl)
+mtcars$vs <- factor(mtcars$vs)
+mtcars$gear <- factor(mtcars$gear)
+mtcars$carb <- factor(mtcars$carb)
+```
+
+No other transformation had been done.
+
+## Exploratory analysis
+
+The *mtcars* dataset has the following structure:
+```{r}
+str(mtcars)
+```
+
+Non-factor variables considered in this analysis have the following summary:
+```{r}
+summary(mtcars[c("mpg", "hp", "wt")])
+```
+
+The only factor variable considered in this analysis has the following item counts:
+```{r}
+table(mtcars$am)
+```
+
+Data is available in all observations for all considered variables (number of NAs is zero):
+```{r}
+sapply(mtcars[c("mpg", "am", "hp", "wt")], function (X) sum(is.na(X)))
+```
+
+# Data analysis
+We try three *linear* regression models to find out the how does *transmission (am)* impact *miles per gallon (mpg)*:
+
+1. the *base model* takes only the *mpg* and *am* variables;
+2. the *highest influence adjusted model* takes the base model and makes adjustments for *horse power* and *weight*, which turned out to be the largest infuencers of the base model;
+3. the *transmission removed model* does not contain the transmission as the regressor, only the horse power and weight.
+
+**Note:** Significance levels are pre-set at *0.05* for every test in this analysis.
+
+## The base model
+First we analyse the relation between *miles per gallon* and *transmission* without any adjustment. Boxplot indicates that manual transmission is better for miles per gallon than automatic transmission:
+
+```{r, fig.cap = "Fuel usage against transmission types in the mtcars dataset"}
+explorafigs <- list()
+explorafigs$base <- 
+  ggplot(mtcars, aes(x = am, y = mpg)) +
+  theme_light() +
+  labs(x = "Transmission (mpg)", y = "Miles per gallon (am)") +
+  coord_cartesian(ylim = c(10, 35)) +
+  geom_boxplot(color = I("steelblue")); explorafigs$base
+```
+
+This assumption is supported by the simple linear model *mpg ~ am*. We get the following estimations for the model coefficients:
+
+```{r}
+M1 <- lm(mpg ~ am, data = mtcars)
+coef(summary(M1)) %>% kable() %>% table.style
+```
+
+And the following confidence intervals for the estimations above:
+
+```{r}
+M1.civ <- confint(M1)
+M1.civ %>% kable() %>% table.style
+```
+
+The results tell us that the mean of MPG is `r coef(M1)[1]` for automatic transmission (am = 0), but for manual transmission (am = 1) the mean MPG increases by `r coef(M1)[2]` ($\pm$ `r diff(M1.civ[2,])/2` using a 95% confidence interval) to `r coef(M1)[1] + coef(M1)[2]` miles per gallon. Based on the P-value of the coefficient of *am1* the alternative hypothesis *transmission affects MPG* is accepted in favor of the null hypothesis *MPG is the same for automatic and manual transmissions* at significance level 0.05. **Based on this model, transmission has a statistically significant impact on MPG.**
+
+Residuals seem properly scattered, although some grouping is visible.
+
+```{r, fig.cap = "MPG residuals with their sum in the base model"}
+residufigs <- list()
+residufigs$base <-
+  ggplot(mapping = aes(x = 1:nrow(mtcars), y = resid(M1))) +
+  theme_light() +
+  labs(x = "Model fit (mpg ~ am)", y = "MPG residual") +
+  coord_cartesian(ylim = c(-10,10)) +
+  geom_point(color = I("steelblue")) +
+  geom_hline(yintercept = sum(resid(M1)), color = I("steelblue")); residufigs$base
+```
+
+## Highest influence adjusted model
+The base model indicates significant dependency of MPG on transmission type, in favor of manual transmission. However, is there any other variable which can have significant effect on the relationship between *mpg* and *am*? It appears to be a natural step to adjust the base model for the *number of forward gears*, as it sounds related to transmission and so should have an effect on *mpg ~ am*.
+
+Instead of relying on gut feelings, we implemented a simple model selection method to get a model adjusted for variables with the highest influence on the MPG-transmission relationship. Starting with a base model, the algorithm iteratively extends it with new variables from the dataset, one at a time, whose addition has the lowest P-value. The algorithm does this until there is no new variable which has statistically significant impact on the previous model, that is its addition bears a P-value greater than the pre-set significance level (or all the variables were used up). The algorithm uses ANOVA for testing. The algorithm is specified in the Annex section.
+
+```{r, echo=FALSE}
+model.selection <- function(data, initial.model, signif.threshold = 0.05)
+{
+  initial.variables <- strsplit(initial.model, " *[~+*] *")[[1]]
+  potential.variables <- setdiff(colnames(data), initial.variables)
+
+  if (length(initial.variables) > 1) # initial.model == "y ~ x ..."
+  {
+    model <- initial.model
+    p.index <- 2
+    operator <- "+"
+  }
+  else # initial.model == "y ~ "
+  {
+    model <- initial.variables[[1]]
+    p.index <- 1
+    operator <- "~"
+  }
+
+  while (length(potential.variables != 0))
+  {
+    p.values <-
+      sapply(potential.variables,
+           function (X)
+             anova(lm(paste(model, operator, X), mtcars))$`Pr(>F)`[p.index])
+    
+    if (sum(p.values <= signif.threshold, na.rm = TRUE) == 0)
+    {
+      break
+    }
+    
+    selected.variable <- potential.variables[which.min(p.values)]
+    potential.variables <- potential.variables[-which.min(p.values)]
+    model <- paste(model, operator, selected.variable)
+    p.index <- p.index + 1
+    operator <- "+"
+  }
+  message(paste("Selected model:", model))
+  return (lm(model, data))
+}
+```
+
+```{r}
+M2 <- model.selection(mtcars, "mpg ~ am")
+```
+
+In this particular case, we start with the base model (*mpg ~ am*), and get a model adjusted for horse power and weight in 1000 lbs: *mpg ~ am + hp + wt*. ANOVA shows strong evidences for adding these variables to the model one after the other:
+
+```{r}
+anova(M2) %>% kable() %>% table.style
+```
+
+However, taking a look at the coefficients of the model, it turns out that the expected effect of transmission type is smaller in this context than in the base model, and it is statistically less significant:
+
+```{r}
+coef(summary(M2)) %>%
+  kable() %>% table.style %>% row_spec(2, bold = TRUE)
+```
+
+The confidence interval of the transmission coefficient estimation is narrower than in case of the base model, and its lower end is negative, which means chances are high that having manual transmission in a car instead of an automatic one has no positive effect on MPG at all:
+
+```{r}
+confint(M2) %>%
+  kable() %>% table.style %>% row_spec(2, bold = TRUE)
+```
+
+Residuals of this model are in general smaller than in the base model:
+
+```{r, fig.cap = "MPG residuals with their sum in the base and highest influence adjusted models"}
+residufigs$highest <-
+  ggplot(mapping = aes(x = 1:nrow(mtcars), y = resid(M2))) +
+  theme_light() +
+  labs(x = "Model fit (mpg ~ am + hp + wt)", y = "MPG residual") +
+  coord_cartesian(ylim = c(-10,10)) +
+  geom_point(color = I("steelblue")) +
+  geom_hline(yintercept = sum(resid(M2)), color = "steelblue")
+
+grid.arrange(grobs = residufigs, ncol = 2)
+```
+
+## Transmission removed model
+The *highest influence adjusted model* estimated the effect of transmission type on miles per gallon values to be non-significant in the presence of the two most powerful influencer of that relationship, horse power (*hp*) and weight in 1000 lbs (*wt*). In fact it seems that the only statistically significant regressors of MPG are horse power and weight. If we run the same `model.selection` algorithm used for the highest influence adjusted model, but now starting with an empty initial model for the MPG (i.e. no initial regressor specified), we get the model *mpg ~ hp + wt* with the following ANOVA:
+
+```{r}
+M3 <- model.selection(mtcars, "mpg ~ ")
+anova(M3)
+```
+
+As a recap, `model.selection` iteratively extends a linear regression model with new variables one-by-one, until the change caused by the addition is statistically not significant anymore. Testing is done with ANOVA.
+
+Comparing the residuals of the three models, they are smaller in this model than in the base, but looks quite similar like the residuals of the highest influence adjusted model, maybe a bit more tightly ordered around their expected value:
+
+```{r, fig.cap = "MPG residuals in the three models"}
+residufigs$notrans <-
+  ggplot(mapping = aes(x = 1:nrow(mtcars), y = resid(M3))) +
+  theme_light() +
+  labs(x = "Model fit (mpg ~ hp + wt)", y = "MPG residual") +
+  coord_cartesian(ylim = c(-10,10)) +
+  geom_point(color = I("steelblue")) +
+  geom_hline(yintercept = sum(resid(M3)), color = I("steelblue"))
+
+grid.arrange(grobs = residufigs, ncol = 3)
+```
+
+# Summary
+We started with a simple linear regression model, which had only one regressor for MPG, the transmission type. This model indicates that there is a statistically significant difference between expected miles per gallon values for automatic and manual transmission, in favor of the latter; in other words, transmission type has a statistically significant impact on MPG, at least in this model.
+
+Adjusting the base model for horse power and weight, however, made the expected effect non-significant. The used linear regression model *mpg ~ am + hp + wt* was the outcome of a simple model selection algorithm specified in the Annex.
+
+Finally, we have seen that transmission type seems to not have any significant effect on MPG; the only statistically significant regressors are horse power and weight.
+
+Based on this the verdict of the analysis is that from MPG point of view it does not matter if a car has automatic or manual transmission system.
+
+# Annex
+## Model selection algorithm
+```{r}
+model.selection <- function(data, initial.model, signif.threshold = 0.05)
+{
+  initial.variables <- strsplit(initial.model, " *[~+*] *")[[1]]
+  potential.variables <- setdiff(colnames(data), initial.variables)
+
+  if (length(initial.variables) > 1) # initial.model == "y ~ x ..."
+  {
+    model <- initial.model
+    p.index <- 2
+    operator <- "+"
+  }
+  else # initial.model == "y ~ "
+  {
+    model <- initial.variables[[1]]
+    p.index <- 1
+    operator <- "~"
+  }
+
+  while (length(potential.variables != 0))
+  {
+    p.values <-
+      sapply(potential.variables,
+           function (X)
+             anova(lm(paste(model, operator, X), mtcars))$`Pr(>F)`[p.index])
+    
+    if (sum(p.values <= signif.threshold, na.rm = TRUE) == 0)
+    {
+      break
+    }
+    
+    selected.variable <- potential.variables[which.min(p.values)]
+    potential.variables <- potential.variables[-which.min(p.values)]
+    model <- paste(model, operator, selected.variable)
+    p.index <- p.index + 1
+    operator <- "+"
+  }
+  message(paste("Selected model:", model))
+  return (lm(model, data))
+}
+```

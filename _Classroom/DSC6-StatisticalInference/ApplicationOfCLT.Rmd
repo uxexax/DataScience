@@ -1,0 +1,136 @@
+---
+title: "Application of the Central Limit Theorem on exponential distribution samples"
+author: "Istvan Andras Horvath"
+date: "November 9th, 2018"
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    fig_caption: yes
+    includes:
+      in_header: h.tex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.height = "7cm", fig.align = "center",
+                      fig.show = "hold")
+
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+```
+
+# Synopsis
+This analysis gives a simple example of the *Central Limit Theorem (CLT)* in work. First we do a simulation where a bunch of samples are drawn from an exponential distribution, then we take the mean of these samples, and investigate the distribution of these (i.e. the sampling distribution of sample means).
+
+# Simulation
+
+Our simulation takes **1000 samples** of **40 observations** drawn from the **exponential distribution** with $\lambda = 0.2$. The samples are stored in a matrix, where each row is a sample, and then we take the mean of each sample and store it in a vector, which gives us the sampling distribution.
+
+```{r}
+set.seed(5)
+
+numof.samples <- 1000
+sample.size <- 40
+lambda <- 0.2
+
+samples <- matrix(data = rexp(numof.samples * sample.size, lambda),
+                  nrow = numof.samples,
+                  ncol = sample.size)
+
+sample.means <- apply(samples, 1, mean)
+
+population.mean <- 1 / lambda
+population.var <- 1 / lambda^2
+```
+
+Note that the mean of the parent distribution is `r population.mean` and its variance is `r population.var` ($1 / \lambda$ and $1/\lambda^2$, respectively).
+
+The first 10 observations from the first 6 samples of the total of `r numof.samples`:
+
+* **1:** `r samples[1,1:8]`, ...
+* **2:** `r samples[2,1:8]`, ...
+* **3:** `r samples[3,1:8]`, ...
+* **4:** `r samples[4,1:8]`, ...
+* **5:** `r samples[5,1:8]`, ...
+* **6:** `r samples[6,1:8]`, ...
+
+# The mean of the sampling distribution
+
+An important conclusion of the CLT is that the mean of the sampling distribution of sample means approximates the mean of the parent distribution, or in other words the mean of the underlying population distribution. (Note: this is valid for other population parameters as well, not only for the mean.)
+
+```{r}
+sampling.mean <- mean(sample.means)
+```
+
+By calculation, the sampling distribution mean is `r sampling.mean`, while the parent distribution mean, as we've seen earlier, is `r population.mean`. These values fall quite close to each other.
+
+To illustrate this, we plot the parent distribution mean (in red) against the sampling distribution mean (in blue) in the figure below. These are all drawn onto the sample means, just to give an overview of those values as well.
+
+```{r fig.cap = "Population mean vs. sampling mean"}
+sampling.mean <- mean(sample.means)
+
+g.means <- list()
+
+g.means$dots <- ggplot() + theme_light() +
+  labs(x = "Sample", y = "Mean", title = "Sample means") +
+  geom_point(mapping = aes(x = 1:numof.samples, y = sample.means),
+             color = I("steelblue")) +
+  geom_hline(yintercept = c(sampling.mean, population.mean),
+             color = I(c("steelblue", "red")), size = I(c(1,1)))
+
+g.means$dotszoomed <- g.means$dots + 
+  labs(title = "Sample means (zoomed)") +
+  coord_cartesian(ylim = c(4.8,5.2))
+
+grid.arrange(grobs = g.means,
+             ncol = 2)
+```
+
+The left part of the figure shows the closeness of the two means: the two horizontal lines almost overlap. The right part of the figure zooms in on the plot around the means, just for a better view.
+
+# The variability of the sample means
+
+By definition, the theoretical variance of the sampling distribution is the variance of the parent population divided by the sample size ($\sigma^2/n$), which can be estimated by the variance of the samples divided by the sample size ($S^2/n$).
+
+```{r}
+sampling.theovar <- population.var / sample.size
+sampling.theosd <- sqrt(sampling.theovar)
+
+sampling.estvar <- var(sample.means)
+sampling.estsd <- sqrt(sampling.estvar)
+```
+
+Based on these the theoretical sample variance is `r sampling.theovar` while the estimated sample variance is `r sampling.estvar`. Similarly, the standard deviations are `r sampling.theosd` and `r sampling.estsd` for theoretical and estimated, respectively.
+
+The estimations are quite close to the theoretical values.
+
+# Parent distribution vs. sampling distribution
+
+Another important conclusion of the Central Limit Theorem is that the sampling distribution of a statistic is approximately normal. (More precisely, as the sample size *n* increases, the sampling distribution becomes more and more normal shaped.)
+
+To illustrate this, the following figure shows two histograms side-by-side:
+
+* *left plot:* the histogram of `r numof.samples` random values taken from the exponential distribution ($\lambda =$ `r lambda`)
+* *right plot:* the histogram of the means of the `r numof.samples` samples
+
+```{r fig.cap = "Parent distribution vs. sampling distribution"}
+g.dist <- list()
+
+g.dist$pop <- ggplot() + theme_light() +
+  labs(x = "Sample value", y = "Count",
+       caption = paste0(numof.samples, 
+                        " random values taken from exponential distribution")) +
+  geom_histogram(mapping = aes(x = rexp(numof.samples, lambda)), 
+                 bins = 20, fill = "steelblue")
+
+g.dist$sam <- ggplot() + theme_light() +
+  labs(x = "Sample value", y = "Count",
+       caption = paste0(numof.samples, " sample means (n = ", sample.size, ")")) +
+  geom_histogram(mapping = aes(x = sample.means), 
+                 bins = 20, fill = "steelblue")
+
+grid.arrange(grobs = g.dist, ncol = 2)
+```
+
+It is clearly visible that even though the observations taken directly from the parent distribution tend to distribute exponentially, the means of the samples taken from the same parent distribution tend to distribute normally: it has an almost symmetric bell shape around the mean.

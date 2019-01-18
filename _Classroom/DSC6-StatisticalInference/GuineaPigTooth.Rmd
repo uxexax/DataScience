@@ -1,0 +1,292 @@
+---
+title: Effect of delivery method and dose of vitamin C on guinea pig average tooth
+  growth
+author: "Istvan Andras Horvath"
+date: "November 9th, 2018"
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    fig_caption: yes
+    includes:
+      in_header: h.tex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.height = "7cm", fig.align = "center",
+                      fig.show = "hold")
+
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(kableExtra)
+```
+
+# Synopsis
+
+This analysis takes the *ToothGrowth* dataset from the R package *datasets*, which contain data about effects of vitamin C on tooth growth of guinea pigs. Quoting the dataset description from its documentation:
+
+*"The response is the length of odontoblasts (cells responsible for tooth growth) in 60 guinea pigs. Each animal received one of three dose levels of vitamin C (0.5, 1, and 2 mg/day) by one of two delivery methods, orange juice or ascorbic acid (a form of vitamin C and coded as VC)."*
+
+This analysis in particular focuses on the effect of delivery method: **Is there a difference in the effect of vitamin C on tooth growth in guinea pigs when vitamin C is delivered by ascorbic acid and by orange juice?**
+
+To answer this question, we analyse tooth growth averages both with confidence intervals and hypothesis tests.
+
+# Dataset overview
+
+```{r}
+data(ToothGrowth)
+ToothGrowth <- ToothGrowth %>% rename(Length = len, Supply = supp, Dose = dose)
+```
+
+*Note: for the sake of clarity, the variable names of the original ToothGrowth data are renamed in the following way:*
+
+* *len to Length*
+* *supp to Supply*
+* *dose to Dose*
+
+The structure of the *ToothGrowth* dataset is the following:
+
+```{r}
+str(ToothGrowth)
+```
+
+The above is the output of `str(ToothGrowth)` in R. Based on it, the dataset is a data frame object, which contains 60 observations of 3 variables called *Length*, *Supply* and *Dose*. Supply has two levels, OJ and VC, which denote orange juice and ascorbic acid, respectively (see section *Synopsis*).
+
+A few of the key statistics obtained from the dataset are presented below. As this analysis is interested in how the delivery method affects tooth growth, the statistics below are *per Supply* and *per Supply per Dose*.
+
+```{r}
+aggregate.stats <- ToothGrowth %>%
+  group_by(Supply) %>%
+  summarise(Mean = mean(Length, na.rm = TRUE),
+            StdDev = sd(Length, na.rm = TRUE),
+            Min = min(Length, na.rm = TRUE),
+            Median = median(Length, na.rm = TRUE),
+            Max = max(Length, na.rm = TRUE),
+            Count = length(Length),
+            NAs = sum(is.na(Length)))
+
+detailed.stats <- ToothGrowth %>%
+  group_by(Supply, Dose) %>%
+  summarise(Mean = mean(Length, na.rm = TRUE),
+            StdDev = sd(Length, na.rm = TRUE),
+            Min = min(Length, na.rm = TRUE),
+            Median = median(Length, na.rm = TRUE),
+            Max = max(Length, na.rm = TRUE),
+            Count = length(Length),
+            NAs = sum(is.na(Length)))
+```
+
+Aggregate statistics (i.e. *per Supply* only):
+
+```{r}
+aggregate.stats %>%
+  kable(row.names = FALSE, align = 'r') %>%
+  kable_styling(full_width = FALSE, bootstrap_options = "condensed",
+                position = "center", font_size = 10) %>%
+  column_spec(1:8, width = "1.5cm")
+```
+
+Detailed statistics (i.e. *per Supply per Dose*):
+
+```{r}
+detailed.stats %>%
+  kable(row.names = FALSE, align = 'r') %>%
+  kable_styling(full_width = FALSE, bootstrap_options = "condensed",
+                position = "center", font_size = 10) %>%
+  column_spec(1:9, width = "1.5cm")
+```
+
+# Analysis by confidence intervals
+
+```{r}
+civ.bound <- function(q, statistic, stddev, sample.size, bound = "LOW")
+{
+  margin.of.error <- pt(q, sample.size-1) * stddev / sqrt(sample.size)
+  
+  if (bound == "LOW")
+    statistic - margin.of.error
+  else
+    statistic + margin.of.error
+}
+
+percentile <- 95
+q <- (100 + percentile) / 200
+```
+
+In this section, we analyse the tooth growth means with `r percentile`% confidence intervals.
+
+## Average tooth growth depending on delivery type
+
+First, we take a look at the aggregate confidence intervals for the mean of tooth length increase when vitamin C was delivered by orange juice and ascorbic acid.
+
+```{r}
+CIV.aggmean <- aggregate.stats %>%
+  select(Supply, Count, Mean, StdDev) %>% 
+  mutate(Low = civ.bound(q, Mean, StdDev, Count, "LOW"),
+         High = civ.bound(q, Mean, StdDev, Count, "HIGH"))
+
+CIV.aggmean %>%
+  kable(row.names = FALSE, align = 'r') %>%
+  kable_styling(full_width = FALSE, bootstrap_options = "condensed",
+                position = "center", font_size = 10) %>%
+  column_spec(1:6, width = "1.5cm")
+```
+
+In the table above *Low* column has the lower bounds of the respective confidence intervals, while *High* has the upper bounds. The same confidence intervals are shown on the figure below.
+
+```{r, fig.cap="Confidence intervals for the mean tooth grows per delivery method"}
+ggplot(CIV.aggmean, mapping = aes(color = Supply)) +
+  theme_light() + scale_color_manual(values = c("steelblue", "pink3")) +
+  labs(y = "") +
+  geom_point(mapping = aes(x = Mean, y = ""), size = I(2)) +
+  geom_errorbarh(mapping = aes(xmin = Low, xmax = High, y = ""),
+                 height = I(0.2), size = I(1))
+```
+
+The results imply that the average tooth growth is larger when vitamin C is delivered by orange juice (OJ) versus by ascorbic acid (VC).
+
+## Average tooth growth depending on delivery type *and* dose
+
+Now we take a look at the confidence intervals when the dose is added to the dependencies beside the delivery method.
+
+```{r}
+CIV.detmean <- detailed.stats %>%
+  select(Supply, Dose, Count, Mean, StdDev) %>% 
+  mutate(Low = civ.bound(q, Mean, StdDev, Count, "LOW"),
+         High = civ.bound(q, Mean, StdDev, Count, "HIGH"))
+
+CIV.detmean %>%
+  kable(row.names = FALSE, align = 'r') %>%
+  kable_styling(full_width = FALSE, bootstrap_options = "condensed",
+                position = "center", font_size = 10) %>%
+  column_spec(1:6, width = "1.5cm")
+```
+
+Similar to the previous table, *Low* refers to the lower bound of the respective confidence interval, while *High* to the upper bound. The same confidence intervals are shown on the figure below.
+
+```{r fig.cap="Confidence intervals for the mean tooth grows per delivery method per dose"}
+ggplot(CIV.detmean, mapping = aes(color = Supply)) + 
+  theme_light() + scale_color_manual(values = c("steelblue", "pink3")) +
+  geom_point(mapping = aes(x = Mean, y = Dose), size = I(2)) +
+  geom_errorbarh(mapping = aes(xmin = Low, xmax = High, y = Dose),
+                 height = I(0.2), size = I(1))
+```
+
+The results indicate a clear difference at doses 0.5 and 1.0 mg/day: in both cases the average tooth growth is expected to be higher when vitamin C is supplied by orange juice (OJ) versus by ascorbic acid (VC). However, when the dose is 2.0 mg/day, the sample data predict no significant difference between delivery methods with respect to average tooth growth.
+
+# Hypothesis tests
+
+In this section, we use hypothesis tests to check whether or not delivery by orange juice is really **better than** ascorbic acid. We do the tests on averages. Like with the confidence intervals, first we examine the effect of only the delivery method on the tooth growth, then the effect of delivery method *and* dose.
+
+## Average tooth growth depending on delivery type
+
+Let $\mu_{OJ}$ denote the mean tooth growth when vitamin C is delivered by orange juice, and $\mu_{VC}$ denote the mean tooth growth when vitamin C is delivered by ascorbic acid. In this case the hypothesis test is the following.
+
+&nbsp;&nbsp;&nbsp;&nbsp;$H_0: \mu_{OJ} - \mu_{VC} = 0$
+
+&nbsp;&nbsp;&nbsp;&nbsp;$H_a: \mu_{OJ} - \mu_{VC} > 0$
+
+```{r}
+alpha <- 0.05
+n <- 30
+```
+
+The significance level is pre-defined at $\alpha = 0.05$.
+
+The sample size is `r n` (both OJ and VC observations are of this amount).
+
+```{r}
+diff <- filter(ToothGrowth, Supply == "OJ")$Length -
+        filter(ToothGrowth, Supply == "VC")$Length
+
+diff.mean <- mean(diff)
+diff.sd <- sd(diff)
+
+t.stat <- diff.mean / (diff.sd / sqrt(nrow(ToothGrowth)/2))
+p.value <- pt(t.stat, length(diff) - 1, lower.tail = FALSE)
+```
+
+The mean of the difference between OJ and VC observations are `r diff.mean`, while its standard deviation is `r diff.sd`.
+
+With these, the **T-statistic** of the difference is **`r t.stat`**, which gives a **P-value** of **`r p.value`**. This is way below the pre-defined significance level, which means there is enough evidence to accept that vitamin C delivered by orange juice causes larger teeth growth (in average) than when it is delivered by ascorbic acid. 
+
+## Average tooth growth depending on delivery type *and* dose
+
+Let $\mu_{OJ}^{[dose]}$ denote the mean tooth growth when vitamin C is delivered by orange juice in a given *dose*, and $\mu_{VC}^{[dose]}$ denote the mean tooth growth when vitamin C is delivered by ascorbic acid in a given *dose*. We define the following three hypothesis tests.
+
+0.5 mg/day dose:
+
+&nbsp;&nbsp;&nbsp;&nbsp;$H_0^{[0.5]}: \mu_{OJ}^{[0.5]} - \mu_{VC}^{[0.5]} = 0$
+
+&nbsp;&nbsp;&nbsp;&nbsp;$H_a^{[0.5]}: \mu_{OJ}^{[0.5]} - \mu_{VC}^{[0.5]} > 0$
+
+1 mg/day dose:
+
+&nbsp;&nbsp;&nbsp;&nbsp;$H_0^{[1]}: \mu_{OJ}^{[1]} - \mu_{VC}^{[1]} = 0$
+
+&nbsp;&nbsp;&nbsp;&nbsp;$H_a^{[1]}: \mu_{OJ}^{[1]} - \mu_{VC}^{[1]} > 0$
+
+2 mg/day dose:
+
+&nbsp;&nbsp;&nbsp;&nbsp;$H_0^{[2]}: \mu_{OJ}^{[2]} - \mu_{VC}^{[2]} = 0$
+
+&nbsp;&nbsp;&nbsp;&nbsp;$H_a^{[2]}: \mu_{OJ}^{[2]} - \mu_{VC}^{[2]} > 0$
+
+```{r}
+alpha <- 0.05
+n <- 10
+doses <- c(0.5, 1, 2)
+```
+
+The significance level for every test is pre-defined at $\alpha = 0.05$.
+
+The sample size is `r n` for every test.
+
+```{r}
+diffs <- data.frame(Dose = doses)
+
+diffs$DiffMean <- sapply(doses,
+                         function (X)
+                           mean(filter(ToothGrowth, Dose == X, Supply == "OJ")$Length -
+                                filter(ToothGrowth, Dose == X, Supply == "VC")$Length)
+                         )
+
+diffs$DiffSD <- sapply(doses,
+                       function (X)
+                         sd(filter(ToothGrowth, Dose == X, Supply == "OJ")$Length -
+                            filter(ToothGrowth, Dose == X, Supply == "VC")$Length)
+                       )
+
+diffs <- diffs %>% mutate(T.stat = DiffMean / (DiffSD / sqrt(n)))
+diffs <- diffs %>% mutate(P.value = pt(T.stat, n-1, lower.tail = FALSE))
+diffs$Alpha <- alpha
+diffs$Reject.H0 <- diffs$P.value <= diffs$Alpha
+```
+
+The results of the tests are summarized in the table below.
+
+```{r}
+diffs %>% kable(row.names = FALSE,
+                col.names = c("Dose", "Difference mean", "Difference s.d.",
+                              "T-statistic", "P-value", "Alpha", "Reject H0")) %>%
+  kable_styling(bootstrap_options = "condensed", full_width = FALSE,
+                font_size = 11) %>%
+  column_spec(1:7, width = "1.75cm")
+```
+
+The results of the test correspond to what was indicated by the confidence intervals: there's enough evidence to say orange juice is a better delivery method of vitamin C with respect to tooth growth in guinea pigs *when* the dose is either 0.5 or 1 mg/day, but this is not the case for the 2 mg/day dose, where there's not enough evidence to reject the null hypothesis.
+
+# Summary of the results
+
+We have shown both with confidence intervals and hypothesis tests that in general orange juice is a better delivery method of vitamin C for guinea pig tooth growth than ascorbic acid. However, when doses are also taken into account, this seem to hold only for 0.5 and 1 mg/day doses, but not for the 2 mg/day dose, where the delivery method does not affect the efficacy of vitamin C. Whether this deviation is due to an error in the samples is not covered by this analysis.
+
+# Assumptions made for the inference
+
+The results are based on the following assumptions regarding the used data:
+
+1. observations in the *ToothGrowth* dataset were taken randomly;
+2. the samples formed from the *ToothGrowth* dataset are unbiased or large enough ($n \ge 30$) for the sampling distribution to well approximate a normal distribution;
+3. observations in the *ToothGrowth* dataset are independent.
+
+
