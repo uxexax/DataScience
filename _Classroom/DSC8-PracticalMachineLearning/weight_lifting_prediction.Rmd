@@ -1,0 +1,282 @@
+---
+title: "Classification of Weight Lifting Exercise Correctness"
+author: "Istvan Andras Horvath"
+date: '5th March, 2019'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(randomForest)
+library(gbm)
+library(kableExtra)
+set.seed(40404)
+
+predtbl.style <- . %>% kable_styling(bootstrap_options = "basic",
+                                     full_width = FALSE, 
+                                     position = "center", 
+                                     font_size = 10)
+```
+
+```{r functions, ref.label=c("limiters","evaluation"), echo=FALSE}
+```
+
+# Synopsis
+
+In this paper I do classification of weight lifting exercises. I try out two different types of models, *random forests (RF)* and *gereralized boosting regression model (GBM)* with different parameters to find sufficient model(s) for prediction. Prediction is preceded by data preparation.
+
+RFs proove to be a better method than GBMs for the task considered in this paper.
+
+Note: *caret* is intentionally not used here to give chance to get to know the original packages.
+
+# Data overview
+
+The predictions made in this document use the *Weight Lifting Exercises Dataset* of *Human Activity Recognition (HAR)*, see [http://groupware.les.inf.puc-rio.br/har]. The data was downloaded from *cloudfront.net*; see the exact address below.
+
+```{r}
+if (!dir.exists("data")) {
+  dir.create("data")
+}
+download.file(url = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+              destfile = "data/pml-training.csv")
+download.file(url = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+              destfile = "data/pml-testing.csv")
+
+training <- read.csv("data/pml-training.csv")
+testing <- read.csv("data/pml-testing.csv")
+```
+
+The training data has `r nrow(training)` samples and `r ncol(training)-1` features plus the outcome *classe*. The testing data has `r nrow(testing)` samples for the same features as in the training data. **Note!** The testing data does not contain the outcome *classe*.
+
+The features are timestamps, excercise identifiers, user IDs and measurements from different devices. There are groups of measurement variables, identified by common prefixes, like *accel_*, *gyros_*, *magnet_*, etc.
+
+# Data preparation
+
+## Removing N/A features
+
+First I check the number of features in both the training and test sets which contain only N/A values.
+
+```{r}
+allna.col.tr <- sapply(training, function (X) all(is.na(X)))
+allna.col.tst <- sapply(testing, function (X) all(is.na(X)))
+na.colnames.tst <- names(training)[allna.col.tst]
+```
+
+The training data contains `r sum(allna.col.tr)` such features, while the test data has `r sum(allna.col.tst)` such features. There is no way to impute these data in the test set, instead I remove the all-NA features from both the test and training data. 
+
+```{r}
+tr.reduced <- training[,!(names(training) %in% na.colnames.tst)]
+tst.reduced <- testing[,!(names(testing) %in% na.colnames.tst)]
+```
+
+Next I also check the partial-NA features; i.e. check whether there are any features for which some (but not all) of the samples are missing.
+
+```{r}
+parna.col.tr <- sapply(tr.reduced, function (X) any(is.na(X)))
+parna.col.tst <- sapply(tst.reduced, function (X) any(is.na(X)))
+```
+
+The number of partial-NA features in training and testing data are `r sum(parna.col.tr)` and `r sum(parna.col.tst)`, and thus no further actions are made.
+
+## Removing non-relevant features
+
+Some of the features in both the training and testing datasets are considered not relevant from the prediction point of view, for example unique timestamps, problem IDs and user names; these features are removed from both datasets.
+
+```{r}
+tr.reduced <- tr.reduced[!(names(tr.reduced) %in%
+                             c("X", "raw_timestamp_part_1", "raw_timestamp_part_2",
+                               "new_window", "num_window", "user_name", "cvtd_timestamp"))]
+tst.reduced <- tst.reduced[!(names(tst.reduced) %in%
+                               c("X", "raw_timestamp_part_1", "raw_timestamp_part_2",
+                                 "new_window", "num_window", "user_name", "problem_id",
+                                 "cvtd_timestamp"))]
+```
+
+## Removing outliers
+
+There are a few major outliers in the dataset, inparticular in the *accel_*, *gyros_* and *magnet_* feature groups, which I remove to avoid misleading the prediction. The definition of the function `limit.group` is provided in the *Appendix* section.
+
+```{r}
+outcome <- "classe"
+predictors <- names(tr.reduced)[names(tr.reduced) != outcome]
+
+tr.reduced <- limit.group(tr.reduced, "accel_", -750, 750)
+tr.reduced <- limit.group(tr.reduced, "gyros_", -7, 7)
+tr.reduced <- limit.group(tr.reduced, "magnet_", -1600, 1600)
+```
+
+## Centering and scaling
+
+Different types of measurements are on different scales in the dataset; for example acceleration data is in the *-1000 ~ 1000* range, while gyroscope data is in the *-7 ~ 7* range, therefore I center and scale the training and testing data; the training data *means* and *standard deviations* are used for both datasets.
+
+```{r}
+tr.means <- sapply(tr.reduced[,predictors], mean)
+tr.sds <- sapply(tr.reduced[,predictors], sd)
+
+for (p in predictors) {
+  tr.reduced[,p] <- (tr.reduced[,p] - tr.means[[p]]) / tr.sds[[p]]
+  tst.reduced[,p] <- (tst.reduced[,p] - tr.means[[p]]) / tr.sds[[p]]
+}
+```
+
+## Creating validation sets
+
+I split the training set into a *training set* and a *validation set* with 7:3 ratio; out of the validation set I create eight validation folds, one for every model.
+
+``` {r}
+tr.indices <- createDataPartition(tr.reduced$classe, p = 0.7, list = FALSE)
+validation <- tr.reduced[-tr.indices,]
+tr.reduced <- tr.reduced[tr.indices,]
+val.folds <- createFolds(validation$classe, k = 8)
+```
+
+# Prediction
+
+I use two prediction methods on the reduced training data:
+
+* random forests (RF)
+* generalized boosted regression models (GBM)
+
+Four models are created with each method (i.e. a total of eight) with different parameters to find sufficient models; note that finding the best fit is not aimed here. Sufficient models make correct predictions from the test set, and any further improvement may increase computation costs without any relevant increase in accuracy for this task.
+
+For each model, I provide the accuracy on the validation fold assigned specifically to that model, and also its prediction on the test set (common for every model).
+
+The correct prediction on the test data is: `B A B A A E D B A A B C B A E E A B B B`.
+
+The function `evaluate.fit` is defined in the *Appendix* section.
+
+# Random forests
+
+I create four different random forest models with different number of trees (*ntree*) and minimum size of terminal nodes (*nodesize*); all other parameters are kept at their default.
+
+```{r}
+running.i <- 1
+
+ntree.values <- c(100, 500, 200, 1000)
+nodesize.values <- c(30, 100, 5, 5)
+E.rf <- data.frame(ModelID = numeric(0),
+                   Ntree = numeric(0),
+                   Nodesize = numeric(0),
+                   Accuracy = numeric(0),
+                   Prediction = character(0), stringsAsFactors = FALSE)
+
+for (i in 1:4) {
+  ntree <- ntree.values[i]; nodesize <- nodesize.values[i]
+  fit <- randomForest(tr.reduced[,predictors], tr.reduced[,outcome],
+                      ntree = ntree, nodesize = nodesize)
+  eval <- evaluate.fit(fit, validation[val.folds[[running.i]],],
+                       tst.reduced, predictors, "rf")
+  E.rf <- rbind(E.rf,
+                data.frame(Model.ID = running.i,
+                           Ntree = ntree,
+                           Nodesize = nodesize,
+                           Accuracy = eval$acc,
+                           Prediction = paste(eval$tst.pred, collapse = " ")))
+  running.i <- running.i + 1
+}
+
+E.rf %>% kable(row.names = FALSE) %>% predtbl.style
+```
+
+It is visible that there's no relevant difference in accuracy between different model settings, and all models give correct prediction on the test data. The training of *model 1* is the quickest of all four (only a few seconds on an average 2019 laptop), and even that model is sufficient. (In theory, higher *ntree* makes training slower, while higher *nodesize* makes it faster.)
+
+## Generalized boosted regression
+
+I create four different GBMs with different number of trees (*n.trees*) and interaction depths (*interaction.depth*); all other parameters are kept at their default.
+
+```{r }
+ntree.values <- c(100, 100, 200, 300)
+idepth.values <- c(1, 2, 3, 4)
+E.gbm <- data.frame(Model.ID = numeric(0),
+                    N.trees = numeric(0),
+                    I.depth = numeric(0),
+                    Accuracy = numeric(0),
+                    Prediction = character(0), stringsAsFactors = FALSE)
+
+for (i in 1:4) {
+  ntrees <- ntree.values[i]; idepth <- idepth.values[i]
+  fit <- gbm(classe ~ ., data = tr.reduced, verbose = FALSE,
+             n.trees = ntrees, interaction.depth = idepth, distribution = "multinomial")
+  eval <- evaluate.fit(fit, validation[val.folds[[running.i]],],
+                       tst.reduced, predictors, "gbm")
+  E.gbm <- rbind(E.gbm,
+                 data.frame(ModelID = running.i,
+                            N.trees = ntrees,
+                            Interaction.depth = idepth,
+                            Accuracy = eval$acc,
+                            Prediction = paste(eval$tst.pred, collapse = " ")))
+  running.i <- running.i + 1
+}
+
+E.gbm %>% kable(row.names = FALSE) %>% predtbl.style
+```
+
+GBM also gives sufficient models relatively quickly, although even the easiest sufficient *model 7* is much slower than the RFs. Note that *model 5*'s and *model 6*'s accuracies are not sufficient, and it fails to correctly predict on the test set.
+
+## Verdict
+
+Both RFs and GBMs give sufficient models for prediction, but the training of RFs proved to be quicker for the task considered in this paper.
+
+# Appendix
+
+## Group and feature limitors
+
+These functions are used to limit the values in the given feature and group of features, and remove complete samples with outliers from the dataset.
+
+```{r limiters}
+limit.feature <- function(DS, feature, limit.lower, limit.upper) {
+  outliers <- which((DS[[feature]] < limit.lower) | (DS[[feature]] > limit.upper))
+  o.table <- data.frame(index = outliers, value = DS[[feature]][outliers])
+  if (length(outliers) != 0) DS <- DS[-outliers,]
+
+  return(DS)
+}
+
+limit.group <- function(DS, feature.group, limit.lower, limit.upper) {
+  features <- 
+    grep(pattern = feature.group, x = names(tr.reduced), value = TRUE)
+  
+  for (f in features) {
+    DS <- limit.feature(DS, f, limit.lower, limit.upper)
+  }
+  return(DS)
+}
+```
+
+## Model evaluation function
+
+This function helps model evaluation; it provides the accuracy on the given validation set, and the prediction on the test set. Method can be *rf* or *gbm*.
+
+```{r evaluation}
+evaluate.fit <- function(fit, validation.set, test.set, predictors, method) {
+  ACC <- function(real, predicted) {
+    return (sum(real==predicted)/length(predicted))
+  }
+  
+  if (method == "rf") {
+    val.pred <- predict(fit, validation.set[,predictors])
+    tst.pred <- predict(fit, test.set)
+  } else if (method == "gbm") {
+    val.pred <- predict(fit, validation.set[,predictors], n.trees = fit$n.trees)
+    val.pred <- factor(
+      apply(val.pred, 1, function (X) which(max(X) == X)),
+      labels = c('A', 'B', 'C', 'D', 'E'))
+    tst.pred <- factor(
+      apply(
+        predict(fit, test.set, n.trees = fit$n.trees),
+        1,
+        function (X) which(max(X) == X)),
+      labels = c('A', 'B', 'C', 'D', 'E'))
+  } else {
+    return()
+  }
+  
+  acc <- ACC(validation.set$classe, val.pred)
+  
+  return(list(acc = acc, tst.pred = tst.pred))
+}
+```
