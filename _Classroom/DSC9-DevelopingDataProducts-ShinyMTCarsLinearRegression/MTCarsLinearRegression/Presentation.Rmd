@@ -1,0 +1,49 @@
+---
+title: "Shiny MTCars: An interactive linear regression modeler"
+author: "Istvan Andras Horvath"
+date: '25-May-2019'
+output: ioslides_presentation
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## What is Shiny MTCars?
+
+It is a Shiny application hosted on *shinyapps.io*: https://uxexax.shinyapps.io/MTCarsLinearRegression
+
+It gives you the possibility to observe different *linear regression* models on the *Motor Trend Car Road Tests (mtcars)* dataset given two criteria:
+
+- response variable
+- significance threshold
+
+The application selects a linear regression model using these two parameters using a proprietary model selection solution. More information about these criteria is provided in the application.
+
+## User interface
+
+
+```{r}
+library(png)
+library(grid)
+P <- readPNG("appsnapshot.png")
+grid.raster(P)
+```
+
+## Model selection
+
+As it was mentioned before, the model is selected with a proprietary function.
+
+Starting with a base model, the algorithm iteratively extends it with new variables from the dataset, one at a time, whose addition has the lowest P-value. The algorithm does this until there is no new variable which has statistically significant impact on the previous model, that is its addition bears a P-value greater than the pre-set significance level (or all the variables were used up). The algorithm uses ANOVA for testing.
+
+You can check the application's code, including the model selection algorithm, on [GitHub](https://github.com/uxexax/DataScience/tree/master/_Classroom/DSC9-DevelopingDataProducts-ShinyMTCarsLinearRegression)
+
+## Roots
+
+The Shiny MTCars application has grown out of a previous study, *Effects of vehicle transmission type on miles per gallon values* published on [RPubs](http://rpubs.com/uxexax/452100).
+
+This analysis used different linear regression models on the *mtcars* dataset to identify whether or not there is any impact of a car’s transmission type (automatic or manual) on how far it can travel with one US gallon of fuel. The model selection function being the base of Shiny MTCars had been developed for back then.
+
+## Try Shiny MTCars out!
+
+On [shinyapps.io](https://uxexax.shinyapps.io/MTCarsLinearRegression). Thank you.
